@@ -50,24 +50,24 @@ void rplidar_init(UART_HandleTypeDef *lidar_uart,
 // Sends the GET_HEALTH command and reads back 3 data bytes
 // Returns: 0=good, 1=warning, 2=error
 // Always call this before starting a scan
-uint8_t rplidar_get_health(void) {
+uint8_t rplidar_get_health(void)
+{
+    // make sure no streaming RX is ongoing
+    HAL_UART_AbortReceive(_uart);
+    _send_cmd(RPLIDAR_CMD_STOP);
+    HAL_Delay(30);
 
-    // 1. Send the command
     _send_cmd(RPLIDAR_CMD_GET_HEALTH);
 
-    // 2. Read the 7-byte response descriptor
-    // The LiDAR always sends a descriptor before any data
-    // We don't need its content, just consume it
-    uint8_t descriptor[7];
-    HAL_UART_Receive(_uart, descriptor, 7, 500);
+    uint8_t d[7] = {0};
+    if (HAL_UART_Receive(_uart, d, 7, 500) != HAL_OK) return 0xFF;
+    if (d[0] != 0xA5 || d[1] != 0x5A) return 0xFE; // bad descriptor
 
-    // 3. Read the 3 actual health data bytes
-    // Byte 0 = status (0=good, 1=warn, 2=error)
-    // Byte 1,2 = error code (only meaningful if status != 0)
-    uint8_t data[3];
-    HAL_UART_Receive(_uart, data, 3, 500);
+    uint8_t data[3] = {0};
+    if (HAL_UART_Receive(_uart, data, 3, 500) != HAL_OK) return 0xFF;
 
-    return data[0]; // return status byte
+    if (data[0] > 2) return 0xFD; // invalid health byte
+    return data[0];
 }
 
 // ─── rplidar_start_scan ───────────────────────────────────────────────────
@@ -112,55 +112,34 @@ void rplidar_stop(void) {
 // Byte 3: [Distance_q2 LSB:8]
 // Byte 4: [Distance_q2 MSB:8]
 void rplidar_feed_byte(uint8_t byte) {
-
-    // Accumulate bytes into our 5-byte packet buffer
     _pkt[_pkt_idx++] = byte;
-
-    // Not enough bytes yet — wait for more
     if (_pkt_idx < RPLIDAR_PACKET_SIZE) return;
-
-    // We have 5 bytes — reset index for next packet
     _pkt_idx = 0;
 
-    // ── Validate the packet ────────────────────────────────────────────
-    // Rule 1: S bit (bit0 of byte0) must be inverse of S_bar (bit1 of byte0)
-    // This is a sync/validity check built into the protocol
-    uint8_t S     = _pkt[0] & 0x01;        // bit 0
-    uint8_t S_bar = (_pkt[0] >> 1) & 0x01; // bit 1
-    if (S == S_bar) return; // invalid packet, discard
+    uint8_t S     = _pkt[0] & 0x01;
+    uint8_t S_bar = (_pkt[0] >> 1) & 0x01;
+    if (S == S_bar) return;
+    if ((_pkt[1] & 0x01) != 1) return;
 
-    // Rule 2: Check bit (bit0 of byte1) must always be 1
-    if ((_pkt[1] & 0x01) != 1) return; // invalid, discard
-
-    // ── Decode the packet ──────────────────────────────────────────────
-    // Quality: upper 6 bits of byte 0
     uint8_t quality = _pkt[0] >> 2;
-
-    // Angle: 15-bit value stored across byte1 and byte2
-    // byte1 bits[7:1] = angle bits[6:0]
-    // byte2 bits[7:0] = angle bits[14:7]
-    // The value is in units of 1/64 degree (Q6 fixed point)
     uint16_t angle_q6 = (((uint16_t)_pkt[2] << 7) | (_pkt[1] >> 1));
-    float angle = angle_q6 / 64.0f;
+    uint16_t dist_q2  = (((uint16_t)_pkt[4] << 8) | _pkt[3]);
 
-    // Distance: 16-bit value across byte3 and byte4
-    // The value is in units of 1/4 mm (Q2 fixed point)
-    uint16_t dist_q2 = (((uint16_t)_pkt[4] << 8) | _pkt[3]);
+    float angle = angle_q6 / 64.0f;
     float distance = dist_q2 / 4.0f;
 
-    // ── Detect start of new revolution ────────────────────────────────
-    // S bit = 1 means this point is the START of a new 360° scan
+    // If this packet starts NEW revolution, close previous one first
     if (S == 1 && rplidar_scan_count > 0) {
-        // Signal main loop that a complete scan is ready
         rplidar_scan_ready = 1;
-        rplidar_scan_count = 0; // reset for next revolution
+        // do NOT reset yet if main still reading old buffer in same cycle
+        // simplest single-buffer method:
+        rplidar_scan_count = 0;
     }
 
-    // ── Store the point ───────────────────────────────────────────────
     if (rplidar_scan_count < RPLIDAR_MAX_POINTS) {
-        rplidar_scan[rplidar_scan_count].quality     = quality;
-        rplidar_scan[rplidar_scan_count].start_bit   = S;
-        rplidar_scan[rplidar_scan_count].angle_deg   = angle;
+        rplidar_scan[rplidar_scan_count].quality = quality;
+        rplidar_scan[rplidar_scan_count].start_bit = S;
+        rplidar_scan[rplidar_scan_count].angle_deg = angle;
         rplidar_scan[rplidar_scan_count].distance_mm = distance;
         rplidar_scan_count++;
     }

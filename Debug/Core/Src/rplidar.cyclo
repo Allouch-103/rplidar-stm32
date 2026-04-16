@@ -1,6 +1,6 @@
 ../Core/Src/rplidar.c:22:13:_send_cmd	1
 ../Core/Src/rplidar.c:31:6:rplidar_init	1
-../Core/Src/rplidar.c:53:9:rplidar_get_health	1
+../Core/Src/rplidar.c:53:9:rplidar_get_health	6
 ../Core/Src/rplidar.c:76:6:rplidar_start_scan	1
 ../Core/Src/rplidar.c:98:6:rplidar_stop	1
 ../Core/Src/rplidar.c:114:6:rplidar_feed_byte	7

@@ -114,6 +114,15 @@ int main(void)
   // Init driver: pass huart1, PB0 port, PB0 pin
   rplidar_init(&huart1, MOTOCTL_GPIO_Port, MOTOCTL_Pin);
 
+  uint8_t reset_cmd[2] = {0xA5, 0x40};
+  HAL_UART_Transmit(&huart1, reset_cmd, 2, 100);
+  HAL_Delay(500);  // wait for LiDAR to reboot
+
+  // Flush any garbage bytes sitting in the UART buffer
+  // by reading and discarding whatever is there
+  uint8_t flush;
+  while (HAL_UART_Receive(&huart1, &flush, 1, 10) == HAL_OK) {}
+
   // Check health before scanning
   uint8_t health = rplidar_get_health();
   printf("LiDAR health: %d (0=good)\r\n", health);
@@ -138,13 +147,16 @@ int main(void)
     /* USER CODE BEGIN 3 */
 	  // Main loop — check if a full scan is ready
 	  if (rplidar_scan_ready) {
-	      rplidar_scan_ready = 0; // clear flag
+	      __disable_irq();
+	      uint16_t n = rplidar_scan_count;   // latch once
+	      rplidar_scan_ready = 0;
+	      __enable_irq();
 
-	      printf("Scan complete: %d points\r\n", rplidar_scan_count);
+	      printf("Scan complete: %u points\r\n", n);
 
-	      // Print first 5 points as a sanity check
-	      for (int i = 0; i < 5 && i < rplidar_scan_count; i++) {
-	          printf("  [%d] angle=%.1f deg  dist=%.1f mm  quality=%d\r\n",
+	      uint16_t to_print = (n < 5) ? n : 5;
+	      for (uint16_t i = 0; i < to_print; i++) {
+	          printf("  [%u] angle=%.1f deg  dist=%.1f mm  quality=%u\r\n",
 	                 i,
 	                 rplidar_scan[i].angle_deg,
 	                 rplidar_scan[i].distance_mm,
@@ -321,6 +333,13 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart->Instance == USART1) {
+		rplidar_feed_byte(rx_byte);
+		HAL_UART_Receive_DMA(&huart1, &rx_byte, 1);
+	}
+}
+
 
 /* USER CODE END 4 */
 
